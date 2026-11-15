@@ -53,6 +53,19 @@ saat air turun/kering → pin terbaca **HIGH**.
 | **IN1** | **GPIO 26** | Kontrol **Pompa Air** (Relay 1) |
 | **IN2** | **GPIO 27** | Kontrol **Lampu Rumah** (Relay 2) |
 
+### Buzzer Aktif
+
+| Pin Buzzer | Terhubung ke | Keterangan |
+|------------|--------------|------------|
+| **+ (kaki positif)** | **GPIO 25** | Sinyal bunyi |
+| **- (kaki negatif)** | **GND** ESP32 | Ground |
+
+> Buzzer **aktif** (bukan pasif) — langsung berbunyi saat diberi tegangan, tidak perlu
+> sinyal PWM/tone. Jika buzzer 5V dan suaranya lemah saat diberi 3.3V, drive lewat
+> transistor NPN (basis ke GPIO25 + resistor 1kΩ, kolektor ke GND buzzer, emitor ke GND,
+> dan kaki + buzzer ke 5V). Untuk buzzer 3.3V, bisa langsung ke GPIO.
+> Jika polaritas/logikanya terbalik, tukar `BUZZER_ON`/`BUZZER_OFF` di kode.
+
 ### Beban AC (Pompa & Lampu)
 
 | Beban | Sambungan |
@@ -70,12 +83,14 @@ GPIO 33  -> Probe Batas Bawah  (INPUT_PULLUP)
 GND      -> Probe Ground (kawat ke-3)
 GPIO 26  -> Relay 1 IN1 (Pompa)
 GPIO 27  -> Relay 2 IN2 (Lampu)
+GPIO 25  -> Buzzer aktif (+)
 5V/VIN   -> Relay VCC
 GND      -> Relay GND
+GND      -> Buzzer (-)
 ```
 
 > Pin 32 & 33 dipilih karena aman, mendukung `INPUT_PULLUP`, dan bukan pin strapping/boot.
-> Pin 26 & 27 aman sebagai output dan tidak mengganggu proses boot.
+> Pin 26, 27 & 25 aman sebagai output dan tidak mengganggu proses boot.
 
 ---
 
@@ -89,22 +104,42 @@ GND      -> Relay GND
 - **Mode MANUAL:** pompa dinyalakan/dimatikan dari tombol web. Tombol pompa otomatis
   **nonaktif** saat mode AUTO aktif. Berpindah ke MANUAL selalu memaksa pompa OFF (aman).
 - **Lampu:** murni manual dari dashboard, bebas ON/OFF kapan saja.
+- **Buzzer:** berbunyi tiap aksi (otomatis maupun manual) — pompa ON **2x**, pompa OFF **1x**,
+  lampu berubah **1x**, ganti mode **2x**. Non-blocking (pakai `millis()`), jadi tidak
+  mengganggu web server. Jumlah beep bisa diubah lewat `BEEP_*` di `main.cpp`.
 - **Status air di dashboard:**
   - `Penuh / Siap Sedot` — Batas Atas terendam.
   - `Sedang Berkurang` — air di antara Batas Atas & Batas Bawah.
   - `Kritis / Kering` — Batas Bawah kering.
+- **Log riwayat:**
+  - Setiap aksi tercatat otomatis: pompa **ON/OFF** (jam, metode **AUTO/MANUAL**,
+    alasan — `batas atas` / `bawah kering` / `tombol web` / `ganti mode`, dan
+    **durasi hidup** saat OFF), perubahan **mode**, serta **lampu**.
+  - **Statistik harian**: total durasi + jumlah kali pompa nyala hari ini,
+    reset otomatis saat tanggal berganti (butuh jam NTP).
+  - Disimpan di **ring buffer RAM** (60 event, ±1 KB) — **tidak menulis flash**,
+    jadi tidak memboroskan siklus tulis memori. Event tertua otomatis terbuang,
+    dan **riwayat hilang saat ESP32 reboot / mati listrik**.
+  - Jam dari **NTP** (WIB = UTC+7, server `pool.ntp.org`), tersinkron otomatis
+    setelah WiFi tersambung. Sebelum tersinkron, stempel log berupa uptime
+    (`+HH:MM:SS`) dan otomatis di-back-fill jadi jam nyata setelah NTP sinkron.
+  - Tampil di card **Riwayat** dashboard; juga tersedia lewat `GET /api/logs`
+    dan di Serial Monitor (semua log serial kini berprefix jam `[HH:MM:SS]`).
 
-Dashboard memakai **Fetch API setiap 1 detik** (auto-refresh tanpa reload halaman).
+Dashboard memakai **Fetch API setiap 1 detik** (status) dan **tiap 5 detik**
+(riwayat) — auto-refresh tanpa reload halaman.
 
 ### API Endpoint
 
 | Endpoint | Fungsi |
 |----------|--------|
 | `GET /` | Halaman dashboard |
-| `GET /api/status` | JSON status lengkap |
+| `GET /api/status` | JSON status lengkap (termasuk `clock`, `uptime`, statistik hari ini) |
 | `GET /api/mode?value=auto\|manual` | Ubah mode pompa |
 | `GET /api/pump?state=on\|off` | Toggle pompa (hanya aktif di mode MANUAL) |
 | `GET /api/lamp?state=on\|off` | Toggle lampu |
+| `GET /api/logs?n=20` | Riwayat: `n` event terakhir + statistik (maks 60) |
+| `GET /api/logs?clear=1` | Kosongkan riwayat (statistik harian tidak direset) |
 
 ---
 
